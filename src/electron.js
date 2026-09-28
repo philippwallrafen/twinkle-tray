@@ -5948,6 +5948,12 @@ const hasClientApiVersion = data =>
 
 const isClientApiV1 = data => data?.version === 1
 
+const createClientApiError = (code, message) => ({
+  clientApiError: true,
+  code,
+  message
+})
+
 const formatClientSuccess = (data, result, ...legacyResults) => {
   if (!isClientApiV1(data)) return legacyResults.length ? legacyResults[0] : result
 
@@ -5960,7 +5966,7 @@ const formatClientSuccess = (data, result, ...legacyResults) => {
 }
 
 const formatClientError = (data, code, error) => {
-  if (!isClientApiV1(data) && code !== "UNSUPPORTED_VERSION") return undefined
+  if (!isClientApiV1(data)) return undefined
 
   return JSON.stringify({
     version: 1,
@@ -5985,17 +5991,31 @@ const handleClientMessage = async (message, remote) => {
     }
     
     data = JSON.parse(message)
-    if (typeof data !== "object" || data === null || !data.type) {
-      return formatClientError(data, "INVALID_REQUEST", `[${type}] Invalid command`)
+
+    if (typeof data !== "object" || data === null) {
+      throw createClientApiError(
+        "INVALID_REQUEST",
+        `[${type}] Invalid command`
+      )
+    }
+
+    if (hasClientApiVersion(data) && !isClientApiV1(data)) {
+      throw createClientApiError(
+        "UNSUPPORTED_VERSION",
+        `Unsupported API version: ${data.version}`
+      )
+    }
+
+    if (!data.type) {
+      throw createClientApiError(
+        "INVALID_REQUEST",
+        `[${type}] Invalid command`
+      )
     }
 
     console.log(data.key, settings.udpKey)
     if (remote && data.key !== settings.udpKey) {
       throw("[UDP] Missing or invalid key")
-    }
-
-    if (hasClientApiVersion(data) && !isClientApiV1(data)) {
-      return formatClientError(data, "UNSUPPORTED_VERSION", `Unsupported API version: ${data.version}`)
     }
 
     const findMonitor = monitor => {
@@ -6034,11 +6054,11 @@ const handleClientMessage = async (message, remote) => {
       // Get property of specific monitor
 
       if (!(data.monitor && data.property)) {
-        return formatClientError(data, "INVALID_REQUEST", "Missing parameter!")
+        throw createClientApiError("INVALID_REQUEST", "Missing parameter!")
       }
 
       const monitor = findMonitor(data.monitor)
-      if (!monitor) return formatClientError(data, "MONITOR_NOT_FOUND", "Couldn't find monitor!")
+      if (!monitor) throw createClientApiError("MONITOR_NOT_FOUND", "Couldn't find monitor!")
 
       const invalidProperty = Symbol("invalidProperty")
       const getMonitorProperty = (monitor, property) => {
@@ -6077,7 +6097,7 @@ const handleClientMessage = async (message, remote) => {
       } else {
         const result = getMonitorProperty(monitor, data.property)
         if (result === invalidProperty) {
-          return formatClientError(data, "INVALID_REQUEST", "Invalid property!")
+          throw createClientApiError("INVALID_REQUEST", "Invalid property!")
         }
         return formatClientSuccess(
           data,
@@ -6090,7 +6110,7 @@ const handleClientMessage = async (message, remote) => {
       // Set property of specific monitor
 
       if (!(data.monitor && data.vcp)) {
-        return formatClientError(data, "INVALID_REQUEST", "Missing parameters!")
+        throw createClientApiError("INVALID_REQUEST", "Missing parameters!")
       }
 
       const value = parseInt(data.value)
@@ -6101,7 +6121,7 @@ const handleClientMessage = async (message, remote) => {
       }
 
       const monitor = findMonitor(data.monitor)
-      if (!monitor) return formatClientError(data, "MONITOR_NOT_FOUND", "Couldn't find monitor!")
+      if (!monitor) throw createClientApiError("MONITOR_NOT_FOUND", "Couldn't find monitor!")
 
       if (data.vcp === "brightness") {
         const newBrightness = minMax(data.mode !== "offset" ? value : monitor.brightness + value)
@@ -6129,10 +6149,27 @@ const handleClientMessage = async (message, remote) => {
       return formatClientSuccess(data, true, undefined)
     }
 
-    return formatClientError(data, "INVALID_COMMAND", "Invalid command")
+    throw createClientApiError("INVALID_COMMAND", "Invalid command")
 
   } catch (e) {
     console.log(`[${type}] Error:`, e)
+
+    if (e?.clientApiError) {
+      if (e.code === "UNSUPPORTED_VERSION") {
+        return JSON.stringify({
+          version: 1,
+          id: data?.id ?? null,
+          ok: false,
+          error: {
+            code: e.code,
+            message: e.message
+          }
+        })
+      }
+
+      return formatClientError(data, e.code, e.message)
+    }
+
     return formatClientError(data, "REQUEST_FAILED", e)
   }
 }
