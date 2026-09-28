@@ -5999,6 +5999,10 @@ const handleClientMessage = async (message, remote) => {
       )
     }
 
+    if (remote && data.key !== settings.udpKey) {
+      throw("[UDP] Missing or invalid key")
+    }
+
     if (hasClientApiVersion(data) && !isClientApiV1(data)) {
       throw createClientApiError(
         "UNSUPPORTED_VERSION",
@@ -6014,9 +6018,6 @@ const handleClientMessage = async (message, remote) => {
     }
 
     console.log(data.key, settings.udpKey)
-    if (remote && data.key !== settings.udpKey) {
-      throw("[UDP] Missing or invalid key")
-    }
 
     const findMonitor = monitor => {
       try {
@@ -6152,7 +6153,10 @@ const handleClientMessage = async (message, remote) => {
     throw createClientApiError("INVALID_COMMAND", "Invalid command")
 
   } catch (e) {
-    console.log(`[${type}] Error:`, e)
+    console.log(
+      `[${type}] Error:`,
+      e?.clientApiError ? e.message : e
+    )
 
     if (e?.clientApiError) {
       if (e.code === "UNSUPPORTED_VERSION") {
