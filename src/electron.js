@@ -5943,8 +5943,36 @@ ipcMain.on('get-mica-wallpaper', sendMicaWallpaper)
 //
 
 
+const isClientApiV1 = data => data?.version === 1
+
+const formatClientSuccess = (data, result, ...legacyResults) => {
+  if (!isClientApiV1(data)) return legacyResults.length ? legacyResults[0] : result
+
+  return JSON.stringify({
+    version: 1,
+    id: data.id ?? null,
+    ok: true,
+    result
+  })
+}
+
+const formatClientError = (data, error) => {
+  if (!isClientApiV1(data)) return undefined
+
+  return JSON.stringify({
+    version: 1,
+    id: data.id ?? null,
+    ok: false,
+    error: {
+      code: "REQUEST_FAILED",
+      message: error instanceof Error ? error.message : String(error)
+    }
+  })
+}
+
 const handleClientMessage = async (message, remote) => {
   const type = (remote ? `UDP` : `PIPE`)
+  let data
 
   try {
     if(remote) {
@@ -5953,7 +5981,7 @@ const handleClientMessage = async (message, remote) => {
       console.log(`[${type}] Got: ${message}`)
     }
     
-    const data = JSON.parse(message)
+    data = JSON.parse(message)
     if (typeof data !== "object" || !data?.type) {
       throw(`[${type}] Invalid command`)
     }
@@ -5989,7 +6017,11 @@ const handleClientMessage = async (message, remote) => {
     if (data.type === "list") {
       // data.type === "list"
       // List all current monitors
-      return JSON.stringify(monitors)
+      return formatClientSuccess(
+        data,
+        monitors,
+        JSON.stringify(monitors)
+      )
     } else if (data.type === "get") {
       // data.type === "get"
       // Get property of specific monitor
@@ -6030,9 +6062,13 @@ const handleClientMessage = async (message, remote) => {
       }
 
       if (data.property === "vcp") {
-        return await getVCP(monitor, data.code)
+        const result = await getVCP(monitor, data.code)
+        return formatClientSuccess(data, result)
       } else {
-        return getMonitorProperty(monitor, data.property)
+        return formatClientSuccess(
+          data,
+          getMonitorProperty(monitor, data.property)
+        )
       }
 
     } else if (data.type === "set" || data.type === "setvcp") {
@@ -6045,7 +6081,7 @@ const handleClientMessage = async (message, remote) => {
 
       if (data.monitor === "all") {
         updateAllBrightness(value, (data.mode ?? "set"))
-        return true
+        return formatClientSuccess(data, true)
       }
 
       const monitor = findMonitor(data.monitor)
@@ -6063,18 +6099,23 @@ const handleClientMessage = async (message, remote) => {
         })
       }
 
+      return formatClientSuccess(data, true, undefined)
+
     } else if (data.type === "checktime") {
       // data.type === "checktime"
       // Use time adjustments
       applyCurrentAdjustmentEvent(true, false)
+      return formatClientSuccess(data, true, undefined)
     } else if (data.type === "refresh") {
       // data.type === "refresh"
       // Force refresh monitors
       refreshMonitors(true, true)
+      return formatClientSuccess(data, true, undefined)
     }
 
   } catch (e) {
     console.log(`[${type}] Error:`, e)
+    return formatClientError(data, e)
   }
 }
 
