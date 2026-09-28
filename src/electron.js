@@ -5943,6 +5943,9 @@ ipcMain.on('get-mica-wallpaper', sendMicaWallpaper)
 //
 
 
+const hasClientApiVersion = data =>
+  data && Object.prototype.hasOwnProperty.call(data, "version")
+
 const isClientApiV1 = data => data?.version === 1
 
 const formatClientSuccess = (data, result, ...legacyResults) => {
@@ -5952,19 +5955,19 @@ const formatClientSuccess = (data, result, ...legacyResults) => {
     version: 1,
     id: data.id ?? null,
     ok: true,
-    result
+    result: result === undefined ? null : result
   })
 }
 
-const formatClientError = (data, error) => {
-  if (!isClientApiV1(data)) return undefined
+const formatClientError = (data, code, error) => {
+  if (!isClientApiV1(data) && code !== "UNSUPPORTED_VERSION") return undefined
 
   return JSON.stringify({
     version: 1,
     id: data.id ?? null,
     ok: false,
     error: {
-      code: "REQUEST_FAILED",
+      code,
       message: error instanceof Error ? error.message : String(error)
     }
   })
@@ -5982,13 +5985,17 @@ const handleClientMessage = async (message, remote) => {
     }
     
     data = JSON.parse(message)
-    if (typeof data !== "object" || !data?.type) {
-      throw(`[${type}] Invalid command`)
+    if (typeof data !== "object" || data === null || !data.type) {
+      return formatClientError(data, "INVALID_REQUEST", `[${type}] Invalid command`)
     }
 
     console.log(data.key, settings.udpKey)
     if (remote && data.key !== settings.udpKey) {
       throw("[UDP] Missing or invalid key")
+    }
+
+    if (hasClientApiVersion(data) && !isClientApiV1(data)) {
+      return formatClientError(data, "UNSUPPORTED_VERSION", `Unsupported API version: ${data.version}`)
     }
 
     const findMonitor = monitor => {
@@ -6026,11 +6033,14 @@ const handleClientMessage = async (message, remote) => {
       // data.type === "get"
       // Get property of specific monitor
 
-      if (!(data.monitor && data.property)) throw("Missing parameter!");
+      if (!(data.monitor && data.property)) {
+        return formatClientError(data, "INVALID_REQUEST", "Missing parameter!")
+      }
 
       const monitor = findMonitor(data.monitor)
-      if (!monitor) throw("Couldn't find monitor!")
+      if (!monitor) return formatClientError(data, "MONITOR_NOT_FOUND", "Couldn't find monitor!")
 
+      const invalidProperty = Symbol("invalidProperty")
       const getMonitorProperty = (monitor, property) => {
         try {
           const { features } = monitor
@@ -6054,7 +6064,7 @@ const handleClientMessage = async (message, remote) => {
             case "maxpowerstate": return (features.powerState ? features.powerState[1] : -1);
             case "volume": return (features.volume ? features.volume[0] : -1);
             case "maxvolume": return (features.volume ? features.volume[1] : -1);
-            default: throw("Invalid property!");
+            default: return invalidProperty;
           }
         } catch (e) {
           throw(`[${type}]  Error getting monitor property`, e)
@@ -6065,9 +6075,13 @@ const handleClientMessage = async (message, remote) => {
         const result = await getVCP(monitor, data.code)
         return formatClientSuccess(data, result)
       } else {
+        const result = getMonitorProperty(monitor, data.property)
+        if (result === invalidProperty) {
+          return formatClientError(data, "INVALID_REQUEST", "Invalid property!")
+        }
         return formatClientSuccess(
           data,
-          getMonitorProperty(monitor, data.property)
+          result
         )
       }
 
@@ -6075,7 +6089,9 @@ const handleClientMessage = async (message, remote) => {
       // data.type === "set"
       // Set property of specific monitor
 
-      if (!(data.monitor && data.vcp)) throw("Missing parameters!");
+      if (!(data.monitor && data.vcp)) {
+        return formatClientError(data, "INVALID_REQUEST", "Missing parameters!")
+      }
 
       const value = parseInt(data.value)
 
@@ -6085,7 +6101,7 @@ const handleClientMessage = async (message, remote) => {
       }
 
       const monitor = findMonitor(data.monitor)
-      if (!monitor) throw("Couldn't find monitor!");
+      if (!monitor) return formatClientError(data, "MONITOR_NOT_FOUND", "Couldn't find monitor!")
 
       if (data.vcp === "brightness") {
         const newBrightness = minMax(data.mode !== "offset" ? value : monitor.brightness + value)
@@ -6113,9 +6129,11 @@ const handleClientMessage = async (message, remote) => {
       return formatClientSuccess(data, true, undefined)
     }
 
+    return formatClientError(data, "INVALID_COMMAND", "Invalid command")
+
   } catch (e) {
     console.log(`[${type}] Error:`, e)
-    return formatClientError(data, e)
+    return formatClientError(data, "REQUEST_FAILED", e)
   }
 }
 
